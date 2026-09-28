@@ -149,3 +149,33 @@ jobs:
           kubectl get pods -n production
           kubectl get services -n production
           kubectl get pvc -n production
+
+      # =========================================================
+      # Monitoring and Observability
+      # =========================================================
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+      - name: Add Prometheus Helm repository
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy Prometheus and Grafana
+        run: |
+          helm upgrade --install monitoring \
+            prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            --wait \
+            --timeout 10m
+
+      - name: Deploy KoalaTech Grafana dashboard
+        run: |
+          kubectl apply \
+            -f monitoring/koalatech-dashboard.yaml
+
+      - name: Verify monitoring deployment
+        run: |
+          kubectl get pods -n monitoring
+          kubectl get services -n monitoring
+          kubectl get configmap koalatech-grafana-dashboard -n monitoring

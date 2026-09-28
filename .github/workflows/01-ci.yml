@@ -1,16 +1,61 @@
 name: 01 - CI
 
 on:
-  # Trigger the workflow on push to main branch
   push:
     branches:
       - main
-  
-  # Manual trigger for the workflow
+
   workflow_dispatch:
 
-
 jobs:
+
+  # =========================================================
+  # Terraform Infrastructure Validation
+  # =========================================================
+  terraform:
+    name: Terraform Validate and Plan
+    runs-on: ubuntu-latest
+
+    env:
+      ARM_CLIENT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}
+      ARM_CLIENT_SECRET: ${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}
+      ARM_SUBSCRIPTION_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}
+      ARM_TENANT_ID: ${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -refresh=false \
+            -input=false \
+            -lock=false \
+            -var="resource_group_name=${{ vars.AKS_RESOURCE_GROUP }}" \
+            -var="acr_name=${{ vars.ACR_NAME }}" \
+            -var="storage_account_name=iftekhar13w08st260916" \
+            -var="aks_cluster_name=${{ vars.AKS_CLUSTER_NAME }}" \
+            -var="aks_dns_prefix=sit722-week08"
+
 
   # =========================================================
   # Backend Tests
@@ -81,7 +126,6 @@ jobs:
       AZURE_STORAGE_CONTAINER_NAME: ""
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -103,18 +147,15 @@ jobs:
 
 
   # =========================================================
-  # Build and Push Docker Images
+  # Build, Scan and Push Docker Images
   # =========================================================
   build-and-push:
-    name: Build and Push ${{ matrix.image }}
+    name: Build, Scan and Push ${{ matrix.image }}
     runs-on: ubuntu-latest
 
-    # All backend tests must pass before this job starts
     needs:
+      - terraform
       - backend-test
-
-    # Build and push when code is pushed to main or manually triggered
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
     strategy:
       fail-fast: false
@@ -140,12 +181,11 @@ jobs:
             image: koalatech-enrollment-service
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Login to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -159,6 +199,17 @@ jobs:
             --platform linux/amd64 \
             -t ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }} \
             ./${{ matrix.service }}
+
+      - name: Docker Scout vulnerability scan
+        uses: docker/scout-action@v1
+        with:
+          command: cves,recommendations
+          image: local://${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}
+          dockerhub-user: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          only-severities: critical,high
+          summary: true
+          exit-code: false
 
       - name: Push Docker image with commit SHA
         run: |
